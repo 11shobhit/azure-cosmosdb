@@ -1,0 +1,117 @@
+import com.azure.data.cosmos.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.PostConstruct;
+import java.time.Duration;
+import java.util.stream.IntStream;
+
+/**
+ * Hello world!
+ *
+ */
+@Component
+public class ChangeFeedDemo {
+
+    @Autowired
+    private CosmosClient client;
+
+    @PostConstruct
+    public void changeFeedDemo() {
+
+        System.out.println("Hello World!");
+
+        CosmosDatabase db = getDB(client);
+        CosmosContainer monitoredContainer = getMonitoredContainer(db);
+        CosmosContainer leaseContainer = getLeaseContainer(db);
+        ChangeFeedProcessor changeFeedProcessor = getChangeFeedProcessor(client, monitoredContainer, leaseContainer);
+
+        changeFeedProcessor.start().block();
+
+    }
+
+    private static CosmosDatabase getDB(CosmosClient client) {
+
+        CosmosDatabase db = client.getDatabase("GroceryStoreDatabaseb");
+        return db;
+    }
+
+    private static CosmosContainer getMonitoredContainer(CosmosDatabase db) {
+
+        CosmosContainer feedContainer = db.getContainer("InventoryContainer");
+        return feedContainer;
+    }
+
+    private static CosmosContainer getLeaseContainer(CosmosDatabase db) {
+
+        CosmosContainerProperties containerProperties = new CosmosContainerProperties("InventoryContainer-lease",
+                "/id");
+        // CosmosContainerRequestOptions requestOptions = new
+        // CosmosContainerRequestOptions();
+        // TODO: Add check to verify existence before making createContainer call
+        // CosmosContainerResponse leaseContainerResponse =
+        // db.createContainer(containerProperties, 400, requestOptions).block();
+        CosmosContainerResponse leaseContainerResponse = db.createContainerIfNotExists(containerProperties).block();
+        if (leaseContainerResponse != null) {
+            CosmosContainer leaseContainer = leaseContainerResponse.container();
+
+            return leaseContainer;
+        }
+        return null;
+
+    }
+
+    private static ChangeFeedProcessor getChangeFeedProcessor(CosmosClient client, CosmosContainer feedContainer,
+            CosmosContainer leaseContainer) {
+
+        System.out.println(feedContainer.id());
+
+        ChangeFeedProcessorOptions changeFeedProcessorOptions = new ChangeFeedProcessorOptions();
+        changeFeedProcessorOptions.startFromBeginning(true);
+        System.out.println("Start from beginning = " + changeFeedProcessorOptions.startFromBeginning());
+
+        Duration duration = changeFeedProcessorOptions.feedPollDelay();
+        System.out.println("Feed poll delay = " + duration.toString());
+        changeFeedProcessorOptions.discardExistingLeases(true);
+
+        System.out.println("Discard existing lease = " + changeFeedProcessorOptions.discardExistingLeases());
+
+        ChangeFeedProcessor feedProcessor = ChangeFeedProcessor.Builder().hostName("test").feedContainer(feedContainer)
+                .leaseContainer(leaseContainer).options(changeFeedProcessorOptions).handleChanges(docs -> {
+                    System.out.println("----------> handleChanges() START");
+
+                    for (CosmosItemProperties document : docs) {
+                        System.out.println("----------> handleChanges() RECEIVED: "
+                                + document.toJson(SerializationFormattingPolicy.INDENTED));
+                    }
+
+                    System.out.println("----------> handleChanges() END");
+                }).build();
+
+        return feedProcessor;
+    }
+
+    private static void createNewDocs(CosmosContainer feedContainer, int count, Duration delay) {
+
+        IntStream.range(1, count).forEach(counter -> {
+            CosmosItemProperties document = new CosmosItemProperties();
+            document.id("AAA" + counter);
+            feedContainer.createItem(document).block();
+        });
+
+        long remainingWork = delay.toMillis();
+
+        while (remainingWork > 0) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+                break;
+            }
+            remainingWork -= 100;
+
+        }
+
+    }
+
+}
